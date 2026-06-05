@@ -576,9 +576,19 @@ static const CmdDispatch cmd_dispatch[] = {
     { NULL, NULL }
 };
 
+static void cmd_handle_status(void) {
+    prof_cons_show("Smart URL settings:");
+    g_autofree char *s_short = g_strdup_printf("  shortening: %s", shorten_enabled ? "ON" : "OFF");
+    prof_cons_show(s_short);
+    g_autofree char *s_maxlen = g_strdup_printf("  maxlen: %d", max_display_len);
+    prof_cons_show(s_maxlen);
+    g_autofree char *s_alpha = g_strdup_printf("  alphabet: \"%s\" (%d chars)", alphabet_orig, alphabet_len);
+    prof_cons_show(s_alpha);
+}
+
 static void surl_command_cb(char **args) {
     if (!args || !args[0]) {
-        prof_cons_bad_cmd_usage("/surl");
+        cmd_handle_status();
         return;
     }
 
