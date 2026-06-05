@@ -683,7 +683,7 @@ void prof_init(G_GNUC_UNUSED const char *const version,
         "/surl alphabet abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
         NULL
     };
-    prof_register_command("/surl", 1, 2, surl_synopsis,
+    prof_register_command("/surl", 0, 2, surl_synopsis,
         "Smart URL — operate on URLs by their short codes. "
         "URLs in incoming messages are annotated with a code and emoji: "
         "📤 for XEP-0363 uploads, 🔗 for external links "
