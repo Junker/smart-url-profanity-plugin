@@ -32,12 +32,12 @@ static GRegex *url_regex = NULL;
 static unsigned long next_code_index = 0;
 static gboolean shorten_enabled = TRUE;
 static gint max_display_len = DEFAULT_MAXLEN;
-static char *alphabet = NULL;          /* working copy (shuffled via sqids) */
+static char *alphabet = NULL;          /* working copy (shuffled) */
 static char *alphabet_orig = NULL;     /* original (saved to settings) */
 static int alphabet_len = 0;
 static xmpp_ctx_t *strophe_ctx = NULL;
-static char *my_domain = NULL;         /* domain part of our own JID (glib-allocated) */
-static char **upload_domains = NULL;    /* NULL-terminated array of disco-discovered upload domains */
+static char *my_domain = NULL;         /* domain part of our own JID */
+static char **upload_domains = NULL;    /* array of disco-discovered upload domains */
 
 /* ------------------------------------------------------------------ */
 /*  Forward declarations                                              */
@@ -116,8 +116,8 @@ static const char *get_url_emoji(const char *url) {
 
     const char *host = g_uri_get_host(uri);
     if (!host) return "🔗";
-    const char *scheme = g_uri_get_scheme(uri);
 
+    const char *scheme = g_uri_get_scheme(uri);
     /* aesgcm:// is always an XEP-0363 upload */
     if (g_strcmp0(scheme, "aesgcm") == 0)
         return "📤";
@@ -687,10 +687,7 @@ void prof_init(G_GNUC_UNUSED const char *const version,
         "Smart URL — operate on URLs by their short codes. "
         "URLs in incoming messages are annotated with a code and emoji: "
         "📤 for XEP-0363 uploads, 🔗 for external links "
-        "(e.g. 📤[kR]upload.example.org/…/file.pdf). "
-        "/surl short on|off toggles annotation, "
-        "/surl maxlen <n> sets the shortening threshold (10–1000), "
-        "/surl alphabet <chars> sets the code alphabet (3+ unique printable ASCII chars, shuffled on set).",
+        "(e.g. 📤[kR]upload.example.org/…/file.pdf). ",
         surl_arguments, surl_examples, surl_command_cb);
 
     /* /suo */
