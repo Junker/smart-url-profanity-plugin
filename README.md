@@ -50,22 +50,6 @@ Tab-completion is available for subcommands, values, and codes:
                          → set alphabet (at least 3 unique printable ASCII chars)
 ```
 
-## Emoji detection
-
-URLs are prefixed with an emoji based on where they point:
-
-| Emoji | Meaning |
-|-------|---------|
-| 📤 | XEP-0363 HTTP Upload — `aesgcm://` URLs, or URLs matching a disco-discovered upload service, or URLs on a subdomain of your JID domain |
-| 🔗 | Regular external link — anything else |
-
-Detection works in layers:
-
-1. `aesgcm://` scheme → always 📤
-2. Host matches a disco-discovered upload service → 📤
-3. Host is a subdomain of your JID domain (heuristic) → 📤
-4. Otherwise → 🔗
-
 ## Building
 
 ### With clipboard support (default, requires GTK3 dev headers)
