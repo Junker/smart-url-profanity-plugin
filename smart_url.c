@@ -1,9 +1,6 @@
 /*
  * smart_url - Profanity plugin that annotates URLs in messages with short codes
  * and provides /surl open|save|copy commands to operate on URLs by code.
- *
- * Long URLs (aesgcm:// from XEP-0363, lengthy https:// uploads, etc.) are
- * shortened for display while the full URL is stored for /surl open|save|copy.
  */
 
 #include <glib.h>
@@ -37,7 +34,6 @@ static char *alphabet_orig = NULL;     /* original (saved to settings) */
 static int alphabet_len = 0;
 static xmpp_ctx_t *strophe_ctx = NULL;
 static char *my_domain = NULL;         /* domain part of our own JID */
-static char **upload_domains = NULL;    /* array of disco-discovered upload domains */
 
 /* ------------------------------------------------------------------ */
 /*  Forward declarations                                              */
@@ -46,7 +42,7 @@ static char **upload_domains = NULL;    /* array of disco-discovered upload doma
 static char *generate_code(unsigned long index);
 static char *register_url(const char *url);
 static gchar *shorten_url(const char *url);
-static char *rewrite_urls(const char *message);
+static char *rewrite_urls(const char *message, const char *sender_domain);
 static gboolean url_replace_cb(const GMatchInfo *match_info, GString *result, gpointer user_data);
 static gboolean clipboard_copy(const char *text);
 static gboolean validate_alphabet(const char *alpha);
@@ -77,39 +73,14 @@ static gboolean is_subdomain(const char *host, const char *domain) {
            g_ascii_strcasecmp(host + hlen - dlen, domain) == 0;
 }
 
-static void free_upload_domains(void) {
-    g_clear_pointer(&upload_domains, g_strfreev);
-}
-
-static void add_upload_domain(const char *domain) {
-    if (!domain) return;
-    /* Avoid duplicates */
-    if (upload_domains) {
-        for (int i = 0; upload_domains[i]; i++) {
-            if (g_ascii_strcasecmp(upload_domains[i], domain) == 0)
-                return;
-        }
-    }
-    int count = upload_domains ? (int)g_strv_length(upload_domains) : 0;
-    upload_domains = g_renew(char *, upload_domains, count + 2);
-    upload_domains[count] = g_strdup(domain);
-    upload_domains[count + 1] = NULL;
-}
-
-static gboolean is_known_upload_host(const char *host) {
-    if (!upload_domains || !host) return FALSE;
-    for (int i = 0; upload_domains[i]; i++) {
-        if (g_ascii_strcasecmp(host, upload_domains[i]) == 0 ||
-            is_subdomain(host, upload_domains[i]))
-            return TRUE;
-    }
-    return FALSE;
-}
-
-static const char *get_url_emoji(const char *url) {
+static const char *get_url_emoji(const char *url, const char *sender_domain) {
     /* Determine emoji for a URL:
-     *  📤 if this is an XEP-0363 HTTP Upload (aesgcm:// or known upload host)
+     *  📤 if this is an aesgcm:// URL (XEP-0363 upload)
+     *  📤 if host is (sub)domain of our own JID (likely own server upload)
+     *  📤 if host is (sub)domain of sender's JID (likely peer's server upload)
      *  🔗 otherwise (external link)
+     *
+     * sender_domain may be NULL (e.g. MUC where real JID unavailable).
      */
     g_autoptr(GUri) uri = g_uri_parse(url, G_URI_FLAGS_NONE, NULL);
     if (!uri) return "🔗";
@@ -122,12 +93,12 @@ static const char *get_url_emoji(const char *url) {
     if (g_strcmp0(scheme, "aesgcm") == 0)
         return "📤";
 
-    /* Host matches a disco-discovered upload service */
-    if (is_known_upload_host(host))
-        return "📤";
-
     /* Heuristic: subdomain of our own JID domain */
     if (my_domain && is_subdomain(host, my_domain))
+        return "📤";
+
+    /* Heuristic: subdomain of the sender's JID domain */
+    if (sender_domain && is_subdomain(host, sender_domain))
         return "📤";
 
     return "🔗";
@@ -348,23 +319,24 @@ static gboolean clipboard_copy(const char *text) {
 /* ------------------------------------------------------------------ */
 
 static gboolean url_replace_cb(const GMatchInfo *match_info, GString *result,
-                               G_GNUC_UNUSED gpointer user_data) {
+                               gpointer user_data) {
+    const char *sender_domain = (const char *)user_data;
     g_autofree gchar *url = g_match_info_fetch(match_info, 0);
     g_autofree char *code = register_url(url);
     g_autofree gchar *display = shorten_url(url);
-    const char *emoji = get_url_emoji(url);
+    const char *emoji = get_url_emoji(url, sender_domain);
 
     g_string_append_printf(result, "%s[%s]%s", emoji, code, display);
 
     return FALSE;
 }
 
-static char *rewrite_urls(const char *message) {
+static char *rewrite_urls(const char *message, const char *sender_domain) {
     if (!message || !shorten_enabled) return NULL;
     if (!g_regex_match(url_regex, message, 0, NULL)) return NULL;
 
     g_autofree gchar *rewritten = g_regex_replace_eval(url_regex, message, -1, 0,
-                                                        0, url_replace_cb, NULL, NULL);
+                                                        0, url_replace_cb, (gpointer)sender_domain, NULL);
     if (!rewritten || g_strcmp0(rewritten, message) == 0) return NULL;
 
     return g_steal_pointer(&rewritten);
@@ -374,92 +346,29 @@ static char *rewrite_urls(const char *message) {
 /*  Pre-display hooks                                                 */
 /* ------------------------------------------------------------------ */
 
-char *prof_pre_chat_message_display(G_GNUC_UNUSED const char *const barejid,
+char *prof_pre_chat_message_display(const char *const barejid,
                                     G_GNUC_UNUSED const char *const resource,
                                     const char *message) {
-    return rewrite_urls(message);
+    char *sender_domain = barejid ? xmpp_jid_domain(strophe_ctx, barejid) : NULL;
+    char *ret = rewrite_urls(message, sender_domain);
+    if (sender_domain) xmpp_free(strophe_ctx, sender_domain);
+    return ret;
 }
 
 char *prof_pre_room_message_display(G_GNUC_UNUSED const char *const barejid,
                                     G_GNUC_UNUSED const char *const nick,
                                     const char *message) {
-    return rewrite_urls(message);
+    /* MUC: real sender JID not available, only check own domain and aesgcm */
+    return rewrite_urls(message, NULL);
 }
 
-char *prof_pre_priv_message_display(G_GNUC_UNUSED const char *const barejid,
+char *prof_pre_priv_message_display(const char *const barejid,
                                     G_GNUC_UNUSED const char *const nick,
                                     const char *message) {
-    return rewrite_urls(message);
-}
-
-/* ------------------------------------------------------------------ */
-/*  XEP-0363 upload service discovery                                 */
-/* ------------------------------------------------------------------ */
-
-static gboolean stanza_has_upload_feature(xmpp_stanza_t *stanza) {
-    /* Recursively search for <feature var="urn:xmpp:http:upload:0"/>
-     * or <feature var="urn:xmpp:upload:0"/> in any child element. */
-    xmpp_stanza_t *child = xmpp_stanza_get_children(stanza);
-    while (child) {
-        const char *name = xmpp_stanza_get_name(child);
-        if (name && g_strcmp0(name, "feature") == 0) {
-            const char *var = xmpp_stanza_get_attribute(child, "var");
-            if (var && (g_strcmp0(var, "urn:xmpp:http:upload:0") == 0 ||
-                        g_strcmp0(var, "urn:xmpp:upload:0") == 0))
-                return TRUE;
-        }
-        /* Recurse into children (e.g. <query> contains <feature>) */
-        if (stanza_has_upload_feature(child))
-            return TRUE;
-
-        child = xmpp_stanza_get_next(child);
-    }
-    return FALSE;
-}
-
-int prof_on_iq_stanza_receive(const char *const stanza_text) {
-    if (!stanza_text) return 1;
-
-    /* Quick filter: skip stanzas that definitely don't contain upload info */
-    if (!strstr(stanza_text, "urn:xmpp:http:upload:0") &&
-        !strstr(stanza_text, "urn:xmpp:upload:0"))
-        return 1;
-
-    /* Parse the stanza string into an xmpp_stanza_t */
-    xmpp_stanza_t *iq = xmpp_stanza_new_from_string(strophe_ctx, stanza_text);
-    if (!iq) return 1;
-
-    /* Only process disco#info results */
-    const char *type = xmpp_stanza_get_type(iq);
-    if (!type || g_strcmp0(type, "result") != 0) {
-        xmpp_stanza_release(iq);
-        return 1;
-    }
-
-    /* Check if this stanza advertises HTTP upload */
-    if (!stanza_has_upload_feature(iq)) {
-        xmpp_stanza_release(iq);
-        return 1;
-    }
-
-    /* Extract the 'from' JID — this identifies the upload service */
-    const char *from = xmpp_stanza_get_from(iq);
-    if (from && *from) {
-        char *domain = xmpp_jid_domain(strophe_ctx, from);
-        if (domain) {
-            add_upload_domain(domain);
-            xmpp_free(strophe_ctx, domain);
-        }
-    } else if (my_domain) {
-        /* No from attribute — per XMPP spec this means the stanza is
-         * from our own server, so add our own domain */
-        add_upload_domain(my_domain);
-    }
-
-    xmpp_stanza_release(iq);
-
-    /* Always continue processing — never consume the stanza */
-    return 1;
+    char *sender_domain = barejid ? xmpp_jid_domain(strophe_ctx, barejid) : NULL;
+    char *ret = rewrite_urls(message, sender_domain);
+    if (sender_domain) xmpp_free(strophe_ctx, sender_domain);
+    return ret;
 }
 
 /* ------------------------------------------------------------------ */
@@ -686,7 +595,7 @@ void prof_init(G_GNUC_UNUSED const char *const version,
     prof_register_command("/surl", 0, 2, surl_synopsis,
         "Smart URL — operate on URLs by their short codes. "
         "URLs in incoming messages are annotated with a code and emoji: "
-        "📤 for XEP-0363 uploads, 🔗 for external links "
+        "📤 for uploads (aesgcm://, your or the sender's domain), 🔗 for external links "
         "(e.g. 📤[kR]upload.example.org/…/file.pdf). ",
         surl_arguments, surl_examples, surl_command_cb);
 
@@ -730,15 +639,12 @@ void prof_on_connect(G_GNUC_UNUSED const char *const account_name,
         my_domain = domain ? g_strdup(domain) : NULL;
         if (domain) xmpp_free(strophe_ctx, domain);
     }
-    /* Clear discovered upload domains on new connection */
-    free_upload_domains();
 }
 
 void prof_on_disconnect(G_GNUC_UNUSED const char *const account_name,
                         G_GNUC_UNUSED const char *const fulljid) {
     g_free(my_domain);
     my_domain = NULL;
-    free_upload_domains();
     /* Clear URL codes — they're session-specific and use the shuffled alphabet */
     if (code_to_url)
         g_hash_table_remove_all(code_to_url);
@@ -752,7 +658,6 @@ void prof_on_shutdown(void) {
     g_clear_pointer(&alphabet, g_free);
     g_clear_pointer(&alphabet_orig, g_free);
     g_clear_pointer(&my_domain, g_free);
-    free_upload_domains();
     g_clear_pointer(&strophe_ctx, xmpp_ctx_free);
 }
 
