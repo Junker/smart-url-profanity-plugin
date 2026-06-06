@@ -5,15 +5,14 @@ A [Profanity](https://profanity.im/) plugin that annotates URLs in incoming mess
 ## Features
 
 - Rewrites URLs in incoming chat, MUC, and private messages with a short code prefix
-- **XEP-0363 aware** — detects HTTP Upload services via service discovery and `aesgcm://` scheme:
-  - `📤[kR]upload.example.org/…/report.pdf` (XEP-0363 upload — your server or peer's)
+- **Upload detection** — marks URLs as uploads (📤) when they uploaded with XEP-0363.
+  - `📤[kR]upload.example.org/…/report.pdf` (upload from your or the sender's server)
   - `🔗[7p]cdn.external.com/…/image.png` (regular external link)
 - **Beautifies long URLs** — short ones are shown in full, long ones are condensed to host + filename
 - **Sqids-inspired codes** — offset-based scrambling so consecutive URLs get very different-looking codes
 - **Configurable alphabet** — any 3+ unique printable ASCII characters
 - Tab-completion for subcommands and URL codes
-- Clipboard copy via GTK3 (works on both X11 and Wayland)
-- Settings persist across sessions
+- Clipboard copy support
 
 ## Commands
 
@@ -89,7 +88,7 @@ Load the plugin in Profanity:
 
 Incoming messages with URLs will be automatically annotated:
 
-> 📤[kR]upload.example.org/…/report.pdf  
+> 📤[kR]upload.example.org/…/report.pdf
 > 🔗[7p]cdn.external.com/…/image.png
 
 Use the short code to open, save, or copy the URL — the **full** URL is always stored internally:
