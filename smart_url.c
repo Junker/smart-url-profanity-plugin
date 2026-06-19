@@ -47,10 +47,6 @@ static gboolean url_replace_cb(const GMatchInfo *match_info, GString *result, gp
 static gboolean clipboard_copy(const char *text);
 static gboolean validate_alphabet(const char *alpha);
 static void surl_command_cb(char **args);
-static void suo_command_cb(char **args);
-static void sus_command_cb(char **args);
-static void suc_command_cb(char **args);
-static void surl_do_action(const char *action, const char *code);
 
 /* ------------------------------------------------------------------ */
 /*  Domain helpers                                                    */
@@ -127,15 +123,9 @@ static void settings_load(void) {
     max_display_len = prof_settings_int_get(SETTINGS_GROUP, "maxlen", DEFAULT_MAXLEN);
     if (max_display_len < 10) max_display_len = DEFAULT_MAXLEN;
 
-    char *saved_alpha = prof_settings_string_get(SETTINGS_GROUP, "alphabet", DEFAULT_ALPHABET);
-    if (validate_alphabet(saved_alpha)) {
-        g_free(alphabet_orig);
-        alphabet_orig = g_strdup(saved_alpha);
-    } else {
-        g_free(alphabet_orig);
-        alphabet_orig = g_strdup(DEFAULT_ALPHABET);
-    }
-    g_free(saved_alpha);
+    g_autofree char *saved_alpha = prof_settings_string_get(SETTINGS_GROUP, "alphabet", DEFAULT_ALPHABET);
+    g_free(alphabet_orig);
+    alphabet_orig = validate_alphabet(saved_alpha) ? g_strdup(saved_alpha) : g_strdup(DEFAULT_ALPHABET);
 
     /* Working copy: shuffled randomly each session */
     g_free(alphabet);
@@ -186,7 +176,6 @@ static char *generate_code(unsigned long index) {
     /* Encode index in base (len-1), using work[1..len-1] as digit chars.
      * work[0] is reserved as separator (unused for single-number encoding). */
     unsigned long n = index;
-
     int digits = 0;
     unsigned long tmp_n = n;
     do { digits++; tmp_n /= base; } while (tmp_n);
@@ -228,16 +217,12 @@ static gboolean validate_alphabet(const char *alpha) {
     gsize len = strlen(alpha);
     if (len < 3) return FALSE;
     /* All characters must be printable ASCII (no spaces or control chars) */
-    for (gsize i = 0; i < len; i++) {
-        if ((unsigned char)alpha[i] < 0x21 || (unsigned char)alpha[i] > 0x7e)
-            return FALSE;
-    }
+    for (gsize i = 0; i < len; i++)
+        if (!g_ascii_isgraph(alpha[i])) return FALSE;
     /* Check all characters are unique */
-    for (gsize i = 0; i < len; i++) {
-        for (gsize j = i + 1; j < len; j++) {
+    for (gsize i = 0; i < len; i++)
+        for (gsize j = i + 1; j < len; j++)
             if (alpha[i] == alpha[j]) return FALSE;
-        }
-    }
     return TRUE;
 }
 
@@ -246,16 +231,14 @@ static gboolean validate_alphabet(const char *alpha) {
 /* ------------------------------------------------------------------ */
 
 static gchar *shorten_url(const char *url) {
-    if (strlen(url) <= (gsize)max_display_len) {
+    if (strlen(url) <= (gsize)max_display_len)
         return g_strdup(url);
-    }
 
-    GUri *uri = g_uri_parse(url, G_URI_FLAGS_NONE, NULL);
-    if (!uri) {
+    g_autoptr(GUri) uri = g_uri_parse(url, G_URI_FLAGS_NONE, NULL);
+    if (!uri)
         return g_strdup_printf("%.*s%s",
                                (int)(max_display_len - strlen(ELLIPSIS)),
                                url, ELLIPSIS);
-    }
 
     const gchar *host = g_uri_get_host(uri);
     const gchar *path = g_uri_get_path(uri);
@@ -270,8 +253,6 @@ static gchar *shorten_url(const char *url) {
     } else if (path && !g_str_equal(path, "/") && strlen(path) > 1) {
         g_string_append(display, "/" ELLIPSIS);
     }
-
-    g_uri_unref(uri);
 
     if (display->len > (gsize)max_display_len) {
         gsize target = max_display_len - strlen(ELLIPSIS);
@@ -346,29 +327,62 @@ static char *rewrite_urls(const char *message, const char *sender_domain) {
 /*  Pre-display hooks                                                 */
 /* ------------------------------------------------------------------ */
 
-char *prof_pre_chat_message_display(const char *const barejid,
-                                    G_GNUC_UNUSED const char *const resource,
-                                    const char *message) {
-    char *sender_domain = barejid ? xmpp_jid_domain(strophe_ctx, barejid) : NULL;
+static char *rewrite_message(const char *barejid, const char *message, gboolean use_sender) {
+    char *sender_domain = (use_sender && barejid) ? xmpp_jid_domain(strophe_ctx, barejid) : NULL;
     char *ret = rewrite_urls(message, sender_domain);
     if (sender_domain) xmpp_free(strophe_ctx, sender_domain);
     return ret;
+}
+
+char *prof_pre_chat_message_display(const char *const barejid,
+                                    G_GNUC_UNUSED const char *const resource,
+                                    const char *message) {
+    return rewrite_message(barejid, message, TRUE);
 }
 
 char *prof_pre_room_message_display(G_GNUC_UNUSED const char *const barejid,
                                     G_GNUC_UNUSED const char *const nick,
                                     const char *message) {
     /* MUC: real sender JID not available, only check own domain and aesgcm */
-    return rewrite_urls(message, NULL);
+    return rewrite_message(barejid, message, FALSE);
 }
 
 char *prof_pre_priv_message_display(const char *const barejid,
                                     G_GNUC_UNUSED const char *const nick,
                                     const char *message) {
-    char *sender_domain = barejid ? xmpp_jid_domain(strophe_ctx, barejid) : NULL;
-    char *ret = rewrite_urls(message, sender_domain);
-    if (sender_domain) xmpp_free(strophe_ctx, sender_domain);
-    return ret;
+    return rewrite_message(barejid, message, TRUE);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Action helpers                                                    */
+/* ------------------------------------------------------------------ */
+
+static void code_not_found(const char *code) {
+    g_autofree char *msg = g_strdup_printf("Smart URL: unknown code \"%s\"", code);
+    prof_cons_show(msg);
+}
+
+static void do_open(const char *code) {
+    const char *url = g_hash_table_lookup(code_to_url, code);
+    if (!url) { code_not_found(code); return; }
+    g_autofree char *cmd = g_strdup_printf("/url open %s", url);
+    prof_send_line(cmd);
+}
+
+static void do_save(const char *code) {
+    const char *url = g_hash_table_lookup(code_to_url, code);
+    if (!url) { code_not_found(code); return; }
+    g_autofree char *cmd = g_strdup_printf("/url save %s", url);
+    prof_send_line(cmd);
+}
+
+static void do_copy(const char *code) {
+    const char *url = g_hash_table_lookup(code_to_url, code);
+    if (!url) { code_not_found(code); return; }
+    if (clipboard_copy(url)) {
+        g_autofree char *msg = g_strdup_printf("Smart URL: copied %s", code);
+        prof_cons_show(msg);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -377,26 +391,17 @@ char *prof_pre_priv_message_display(const char *const barejid,
 
 static void cmd_handle_open(char **args) {
     if (!args || !args[0]) { prof_cons_show("Usage: /surl open <code>"); return; }
-    surl_do_action("open", args[0]);
+    do_open(args[0]);
 }
 
 static void cmd_handle_save(char **args) {
     if (!args || !args[0]) { prof_cons_show("Usage: /surl save <code>"); return; }
-    surl_do_action("save", args[0]);
+    do_save(args[0]);
 }
 
 static void cmd_handle_copy(char **args) {
     if (!args || !args[0]) { prof_cons_show("Usage: /surl copy <code>"); return; }
-    const char *url = g_hash_table_lookup(code_to_url, args[0]);
-    if (!url) {
-        g_autofree char *msg = g_strdup_printf("Smart URL: unknown code \"%s\"", args[0]);
-        prof_cons_show(msg);
-        return;
-    }
-    if (clipboard_copy(url)) {
-        g_autofree char *msg = g_strdup_printf("Smart URL: copied %s", args[0]);
-        prof_cons_show(msg);
-    }
+    do_copy(args[0]);
 }
 
 static void cmd_handle_short(char **args) {
@@ -519,37 +524,17 @@ static void surl_command_cb(char **args) {
 
 static void suo_command_cb(char **args) {
     if (!args || !args[0]) { prof_cons_show("Usage: /suo <code>"); return; }
-    surl_do_action("open", args[0]);
+    do_open(args[0]);
 }
 
 static void sus_command_cb(char **args) {
     if (!args || !args[0]) { prof_cons_show("Usage: /sus <code>"); return; }
-    surl_do_action("save", args[0]);
+    do_save(args[0]);
 }
 
 static void suc_command_cb(char **args) {
     if (!args || !args[0]) { prof_cons_show("Usage: /suc <code>"); return; }
-    const char *url = g_hash_table_lookup(code_to_url, args[0]);
-    if (!url) {
-        g_autofree char *msg = g_strdup_printf("Smart URL: unknown code \"%s\"", args[0]);
-        prof_cons_show(msg);
-        return;
-    }
-    if (clipboard_copy(url)) {
-        g_autofree char *msg = g_strdup_printf("Smart URL: copied %s", args[0]);
-        prof_cons_show(msg);
-    }
-}
-
-static void surl_do_action(const char *action, const char *code) {
-    const char *url = g_hash_table_lookup(code_to_url, code);
-    if (!url) {
-        g_autofree char *msg = g_strdup_printf("Smart URL: unknown code \"%s\"", code);
-        prof_cons_show(msg);
-        return;
-    }
-    g_autofree char *cmd = g_strdup_printf("/url %s %s", action, url);
-    prof_send_line(cmd);
+    do_copy(args[0]);
 }
 
 /* ------------------------------------------------------------------ */
