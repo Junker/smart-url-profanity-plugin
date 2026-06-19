@@ -90,7 +90,7 @@ static const char *get_url_emoji(const char *url, const char *sender_domain) {
 
     const char *scheme = g_uri_get_scheme(uri);
     /* aesgcm:// is always an XEP-0363 upload */
-    if (g_strcmp0(scheme, "aesgcm") == 0)
+    if (g_str_equal(scheme, "aesgcm"))
         return "📤";
 
     /* Heuristic: subdomain of our own JID domain */
@@ -267,7 +267,7 @@ static gchar *shorten_url(const char *url) {
 
     if (*filename) {
         g_string_append_printf(display, "/" ELLIPSIS "/%s", filename);
-    } else if (path && g_strcmp0(path, "/") != 0 && strlen(path) > 1) {
+    } else if (path && !g_str_equal(path, "/") && strlen(path) > 1) {
         g_string_append(display, "/" ELLIPSIS);
     }
 
@@ -337,7 +337,7 @@ static char *rewrite_urls(const char *message, const char *sender_domain) {
 
     g_autofree gchar *rewritten = g_regex_replace_eval(url_regex, message, -1, 0,
                                                         0, url_replace_cb, (gpointer)sender_domain, NULL);
-    if (!rewritten || g_strcmp0(rewritten, message) == 0) return NULL;
+    if (!rewritten || g_str_equal(rewritten, message)) return NULL;
 
     return g_steal_pointer(&rewritten);
 }
@@ -406,11 +406,11 @@ static void cmd_handle_short(char **args) {
         prof_cons_show(msg);
         return;
     }
-    if (g_strcmp0(args[0], "on") == 0) {
+    if (g_str_equal(args[0], "on")) {
         shorten_enabled = TRUE;
         settings_save();
         prof_cons_show("Smart URL: shortening enabled");
-    } else if (g_strcmp0(args[0], "off") == 0) {
+    } else if (g_str_equal(args[0], "off")) {
         shorten_enabled = FALSE;
         settings_save();
         prof_cons_show("Smart URL: shortening disabled — URLs pass through unchanged");
@@ -502,7 +502,7 @@ static void surl_command_cb(char **args) {
     }
 
     for (const CmdDispatch *d = cmd_dispatch; d->name; d++) {
-        if (g_strcmp0(args[0], d->name) == 0) {
+        if (g_str_equal(args[0], d->name)) {
             d->handler(args + 1);
             return;
         }
